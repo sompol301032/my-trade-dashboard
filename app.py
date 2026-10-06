@@ -7,7 +7,7 @@ from datetime import datetime
 
 st.set_page_config(page_title="Trade Manager Dashboard", layout="wide")
 
-# CSS สำหรับจัดแต่งตารางปฏิทินให้สวยงาม
+# CSS สำหรับจัดแต่งตารางปฏิทิน
 st.markdown("""
 <style>
     .cal-header {
@@ -70,7 +70,7 @@ elif os.path.exists(CSV_FILE):
 if df is None or df.empty:
     st.info("👋 กรุณาอัปโหลดไฟล์ CSV ประวัติการเทรดผ่านแถบเมนูด้านข้าง (Sidebar) เพื่อเริ่มใช้งาน")
 else:
-    # ระบุคอลัมน์เวลา
+    # 1. จัดการคอลัมน์เวลา
     time_col = None
     for col in ['time', 'open_time', 'close_time', 'Time', 'Open Time']:
         if col in df.columns:
@@ -85,7 +85,7 @@ else:
             df['datetime_parsed'] = pd.to_datetime(df[time_col], errors='coerce')
         df['Date'] = df['datetime_parsed'].dt.date
 
-    # ตัวเลือกเลือกพอร์ต
+    # 2. ตัวเลือกพอร์ต
     account_col = None
     for col in ['account', 'Account', 'login', 'Login']:
         if col in df.columns:
@@ -104,6 +104,29 @@ else:
 
     profit_col = 'profit' if 'profit' in df_filtered.columns else ('Profit' if 'Profit' in df_filtered.columns else None)
 
+    # 3. คำนวณเหตุผลการปิดออเดอร์ (TP / SL / ปิดมือ)
+    def detect_close_reason(row):
+        comment = str(row.get('comment', '')).lower()
+        if '[tp]' in comment or 'tp' in comment:
+            return '🎯 ชน TP'
+        elif '[sl]' in comment or 'sl' in comment:
+            return '🛑 ชน SL'
+        
+        # เช็กจากราคาปิดกับค่า TP/SL
+        price_close = row.get('price_close', row.get('close_price', None))
+        tp = row.get('tp', row.get('TP', 0))
+        sl = row.get('sl', row.get('SL', 0))
+        
+        if pd.notnull(price_close):
+            if tp and abs(price_close - tp) < 0.0001:
+                return '🎯 ชน TP'
+            if sl and abs(price_close - sl) < 0.0001:
+                return '🛑 ชน SL'
+                
+        return '✋ ปิดมือ (Manual)'
+
+    df_filtered['การปิดออเดอร์'] = df_filtered.apply(detect_close_reason, axis=1)
+
     # แสดงการ์ดสรุปยอด
     total_profit = df_filtered[profit_col].sum() if profit_col else 0.0
     total_trades = len(df_filtered)
@@ -118,16 +141,13 @@ else:
 
     st.markdown("---")
 
-    # แท็บเลือกการแสดงผล
     tab1, tab2, tab3 = st.tabs(["📅 ตารางปฏิทิน (ปฏิทิน)", "📈 กราฟสถิติ (ชาร์ต)", "📜 ประวัติออเดอร์ (ประวัติศาสตร์)"])
 
     with tab1:
         st.subheader("📅 ตารางปฏิทินกำไร/ขาดทุนรายวัน")
         if 'Date' in df_filtered.columns and profit_col:
-            # คำนวณกำไรรายวัน
             daily_pnl = df_filtered.groupby('Date')[profit_col].sum().to_dict()
             
-            # เลือกเดือน/ปีที่ต้องการดู
             all_dates = [d for d in df_filtered['Date'].dropna()]
             if all_dates:
                 latest_date = max(all_dates)
@@ -147,13 +167,11 @@ else:
 
             st.markdown(f"### {sel_month_name} {sel_year}")
 
-            # หัววัน 월 จันทร์ - อาทิตย์
             days_header = ["วันจันทร์", "วันอังคาร", "วันพุธ", "วันพฤหัสบดี", "วันศุกร์", "วันเสาร์", "วันอาทิตย์"]
             cols = st.columns(7)
             for i, h in enumerate(days_header):
                 cols[i].markdown(f"<div class='cal-header'>{h}</div>", unsafe_allow_html=True)
 
-            # สร้างกริ็ดตารางปฏิทิน
             cal = calendar.monthcalendar(sel_year, sel_month)
             for week in cal:
                 cols = st.columns(7)
@@ -192,4 +210,15 @@ else:
 
     with tab3:
         st.subheader("📋 ประวัติการเทรดทั้งหมด (Trade Logs)")
-        st.dataframe(df_filtered, use_container_width=True)
+        
+        display_df = df_filtered.copy()
+        
+        # จัดคอลัมน์ "การปิดออเดอร์" มาไว้ด้านหน้าให้เห็นชัดเจน
+        cols = ['การปิดออเดอร์'] + [c for c in display_df.columns if c != 'การปิดออเดอร์']
+        display_df = display_df[cols]
+        
+        # ซ่อนคอลัมน์คำนวณชั่วคราว
+        cols_to_drop = ['datetime_parsed', 'Date', 'cum_profit']
+        display_df = display_df.drop(columns=[c for c in cols_to_drop if c in display_df.columns])
+        
+        st.dataframe(display_df, use_container_width=True)
