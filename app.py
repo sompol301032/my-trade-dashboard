@@ -21,6 +21,7 @@ else:
             df['time'] = pd.to_datetime(df['time'])
             df['Date'] = df['time'].dt.date
         
+        #Sidebar ตัวเลือกกรองตามเลขพอร์ต
         accounts = ["ทั้งหมด (All Accounts)"] + sorted(list(df['account'].unique().astype(str))) if 'account' in df.columns else ["ทั้งหมด"]
         selected_account = st.sidebar.selectbox("เลือกพอร์ตการเทรด (Account):", accounts)
         
@@ -29,6 +30,7 @@ else:
         else:
             df_filtered = df.copy()
             
+        # คำนวณสรุปผลกำไร
         total_profit = df_filtered['profit'].sum() if 'profit' in df.columns else 0.0
         total_trades = len(df_filtered)
         
@@ -43,7 +45,29 @@ else:
         
         st.markdown("---")
         
-        if 'time' in df.columns and 'profit' in df.columns:
+        # 🗓️ ส่วนปฏิทินสรุปกำไรรายวัน (Daily Profit Calendar)
+        st.subheader("🗓️ ปฏิทินสรุปกำไร/ขาดทุน รายวัน (Daily Profit Summary)")
+        if 'Date' in df_filtered.columns and 'profit' in df_filtered.columns:
+            daily_profit = df_filtered.groupby('Date')['profit'].sum().reset_index()
+            daily_profit['Status'] = daily_profit['profit'].apply(lambda x: '🟢 กำไร (Profit)' if x >= 0 else '🔴 ขาดทุน (Loss)')
+            
+            fig_bar = px.bar(
+                daily_profit, 
+                x='Date', 
+                y='profit', 
+                color='Status',
+                color_discrete_map={'🟢 กำไร (Profit)': '#2ECC71', '🔴 ขาดทุน (Loss)': '#E74C3C'},
+                labels={'Date': 'วันที่', 'profit': 'กำไร/ขาดทุน ($)'},
+                title="กำไรสุทธิแยกตามวัน"
+            )
+            st.plotly_chart(fig_bar, use_container_width=True)
+            
+            st.dataframe(daily_profit.sort_values('Date', ascending=False), use_container_width=True)
+        
+        st.markdown("---")
+
+        # 📈 กราฟการเติบโตพอร์ต
+        if 'time' in df_filtered.columns and 'profit' in df_filtered.columns:
             df_filtered = df_filtered.sort_values('time')
             df_filtered['cum_profit'] = df_filtered['profit'].cumsum()
             
@@ -51,5 +75,6 @@ else:
             fig = px.line(df_filtered, x='time', y='cum_profit', labels={'time': 'เวลา', 'cum_profit': 'กำไรสะสม ($)'})
             st.plotly_chart(fig, use_container_width=True)
             
-        st.subheader("📋 ประวัติการเทรดทั้งหมด")
+        # 📋 ประวัติการเทรดแบบละเอียด
+        st.subheader("📋 ประวัติการเทรดทั้งหมด (Trade Logs)")
         st.dataframe(df_filtered, use_container_width=True)
