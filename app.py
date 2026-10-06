@@ -112,7 +112,6 @@ else:
         elif '[sl]' in comment or 'sl' in comment:
             return '🛑 ชน SL'
         
-        # เช็กจากราคาปิดกับค่า TP/SL
         price_close = row.get('price_close', row.get('close_price', None))
         tp = row.get('tp', row.get('TP', 0))
         sl = row.get('sl', row.get('SL', 0))
@@ -126,6 +125,11 @@ else:
         return '✋ ปิดมือ (Manual)'
 
     df_filtered['การปิดออเดอร์'] = df_filtered.apply(detect_close_reason, axis=1)
+
+    # 4. แปลงค่า type จาก 0/1 เป็น Buy/Sell
+    if 'type' in df_filtered.columns:
+        type_map = {0: 'Buy 🔵', 1: 'Sell 🔴', '0': 'Buy 🔵', '1': 'Sell 🔴'}
+        df_filtered['type'] = df_filtered['type'].map(lambda x: type_map.get(x, x))
 
     # แสดงการ์ดสรุปยอด
     total_profit = df_filtered[profit_col].sum() if profit_col else 0.0
@@ -213,12 +217,12 @@ else:
         
         display_df = df_filtered.copy()
         
-        # จัดคอลัมน์ "การปิดออเดอร์" มาไว้ด้านหน้าให้เห็นชัดเจน
+        # จัดคอลัมน์ "การปิดออเดอร์" มาไว้ด้านหน้า
         cols = ['การปิดออเดอร์'] + [c for c in display_df.columns if c != 'การปิดออเดอร์']
         display_df = display_df[cols]
         
-        # ซ่อนคอลัมน์คำนวณชั่วคราว
-        cols_to_drop = ['datetime_parsed', 'Date', 'cum_profit']
+        # เอาคอลัมน์ที่ไม่ต้องการออก (commission, swap, fee, time_msc และคอลัมน์คำนวณชั่วคราว)
+        cols_to_drop = ['commission', 'swap', 'fee', 'time_msc', 'datetime_parsed', 'Date', 'cum_profit']
         display_df = display_df.drop(columns=[c for c in cols_to_drop if c in display_df.columns])
         
         st.dataframe(display_df, use_container_width=True)
