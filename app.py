@@ -7,7 +7,6 @@ from datetime import datetime
 
 st.set_page_config(page_title="Trade Manager Dashboard", layout="wide")
 
-# CSS สำหรับจัดแต่งตารางปฏิทินให้เหมือนภาพตัวอย่าง
 st.markdown("""
 <style>
     .cal-header {
@@ -98,57 +97,77 @@ st.markdown("""
 
 st.title("📊 Trade Manager Dashboard")
 
-CSV_FILE = "trades_history_all.csv"
-
-# Sidebar: สำหรับผู้ใช้อื่นอัปโหลดไฟล์
 st.sidebar.header("⚙️ ตัวเลือกข้อมูล")
 uploaded_file = st.sidebar.file_uploader("อัปโหลดไฟล์ CSV ประวัติการเทรด (XM / Exness)", type=["csv"])
 
+def load_data(file_source):
+    if hasattr(file_source, 'seek'):
+        file_source.seek(0)
+    lines = file_source.readlines()
+    skip_rows = 0
+    
+    for idx, line in enumerate(lines):
+        line_str = line.decode('utf-8', errors='ignore') if isinstance(line, bytes) else str(line)
+        if any(keyword in line_str for keyword in ['Time', 'Position', 'Symbol', 'Profit', 'close_time']):
+            skip_rows = idx
+            break
+            
+    if hasattr(file_source, 'seek'):
+        file_source.seek(0)
+        
+    df = pd.read_csv(file_source, skiprows=skip_rows)
+    return df
+
 df = None
 if uploaded_file is not None:
-    df = pd.read_csv(uploaded_file)
-elif os.path.exists(CSV_FILE):
-    df = pd.read_csv(CSV_FILE)
+    try:
+        df = load_data(uploaded_file)
+    except Exception as e:
+        st.error(f"เกิดข้อผิดพลาดในการอ่านไฟล์: {e}")
 
 if df is None or df.empty:
     st.info("👋 กรุณาอัปโหลดไฟล์ CSV ประวัติการเทรดผ่านแถบเมนูด้านข้าง (Sidebar) เพื่อเริ่มใช้งาน")
 else:
-    # -------------------------------------------------------------
-    # 1. Standardize Columns (รองรับทั้ง XM & Exness)
-    # -------------------------------------------------------------
-    # รวมคอลัมน์เวลากับ Exness/XM
+    # กรองเฉพาะแถบที่เป็นการเทรดจริง (ไม่เอา balance/credit)
+    type_col = None
+    for col in ['Type', 'type']:
+        if col in df.columns:
+            type_col = col
+            break
+    if type_col:
+        df = df[~df[type_col].astype(str).str.lower().isin(['balance', 'credit', 'deposit', 'withdrawal'])].copy()
+
+    # ค้นหาคอลัมน์เวลา
     time_col = None
-    for col in ['close_time', 'Close Time', 'time', 'Time', 'open_time', 'Open Time', 'Timestamp']:
+    for col in ['Time', 'close_time', 'Close Time', 'time', 'open_time']:
         if col in df.columns:
             time_col = col
             break
             
     if time_col:
-        if pd.api.types.is_numeric_dtype(df[time_col]):
-            unit = 'ms' if df[time_col].max() > 1e11 else 's'
-            df['datetime_parsed'] = pd.to_datetime(df[time_col], unit=unit, errors='coerce')
-        else:
-            df['datetime_parsed'] = pd.to_datetime(df[time_col], errors='coerce')
+        df = df[df[time_col].notnull()].copy()
+        df['datetime_parsed'] = pd.to_datetime(df[time_col], errors='coerce')
         df['Date'] = df['datetime_parsed'].dt.date
 
-    # รวมคอลัมน์กำไร
+    # ค้นหาและแปลงคอลัมน์กำไร
     profit_col = None
-    for col in ['profit', 'Profit', 'Profit/Loss', 'Profit ($)']:
+    for col in ['Profit', 'profit', 'Profit/Loss']:
         if col in df.columns:
             profit_col = col
             break
             
     if profit_col:
-        df[profit_col] = pd.to_numeric(df[profit_col].astype(str).str.replace('$', '').str.replace(',', ''), errors='coerce').fillna(0.0)
+        # แปลงข้อความให้เป็นตัวเลข รวมถึงติดลบ
+        df[profit_col] = df[profit_col].astype(str).str.replace('$', '', regex=False).str.replace(',', '', regex=False).str.replace(' ', '', regex=False)
+        df[profit_col] = pd.to_numeric(df[profit_col], errors='coerce').fillna(0.0)
 
-    # รวมคอลัมน์บัญชี / โบรกเกอร์
+    # Filter เลือกบัญชี
     account_col = None
-    for col in ['account', 'Account', 'login', 'Login', 'Broker', 'broker']:
+    for col in ['Account', 'account', 'login', 'Login']:
         if col in df.columns:
             account_col = col
             break
 
-    # Filter เลือกพอร์ต
     if account_col:
         accounts = ["ทั้งหมด (All Accounts)"] + sorted(list(df[account_col].astype(str).unique()))
         selected_account = st.sidebar.selectbox("เลือกพอร์ตการเทรด (Account):", accounts)
@@ -159,45 +178,7 @@ else:
     else:
         df_filtered = df.copy()
 
-    # -------------------------------------------------------------
-    # 2. คำนวณเหตุผลการปิดออเดอร์ (TP / SL / ปิดมือ)
-    # -------------------------------------------------------------
-    def detect_close_reason(row):
-        comment = str(row.get('comment', row.get('Comment', ''))).lower()
-        if '[tp]' in comment or 'tp' in comment:
-            return '🎯 ชน TP'
-        elif '[sl]' in comment or 'sl' in comment:
-            return '🛑 ชน SL'
-        
-        price_close = row.get('price_close', row.get('close_price', row.get('Close Price', None)))
-        tp = row.get('tp', row.get('TP', 0))
-        sl = row.get('sl', row.get('SL', 0))
-        
-        if pd.notnull(price_close):
-            try:
-                price_close = float(price_close)
-                tp = float(tp) if tp else 0
-                sl = float(sl) if sl else 0
-                if tp and abs(price_close - tp) < 0.0001:
-                    return '🎯 ชน TP'
-                if sl and abs(price_close - sl) < 0.0001:
-                    return '🛑 ชน SL'
-            except:
-                pass
-                
-        return '✋ ปิดมือ (Manual)'
-
-    df_filtered['การปิดออเดอร์'] = df_filtered.apply(detect_close_reason, axis=1)
-
-    # แปลงค่า type จาก 0/1 เป็น Buy/Sell
-    type_col = 'type' if 'type' in df_filtered.columns else ('Type' if 'Type' in df_filtered.columns else None)
-    if type_col:
-        type_map = {0: 'Buy 🔵', 1: 'Sell 🔴', '0': 'Buy 🔵', '1': 'Sell 🔴', 'buy': 'Buy 🔵', 'sell': 'Sell 🔴'}
-        df_filtered['type_display'] = df_filtered[type_col].astype(str).str.lower().map(lambda x: type_map.get(x, x))
-
-    # -------------------------------------------------------------
-    # 3. แสดงการ์ดสรุปยอด
-    # -------------------------------------------------------------
+    # การ์ดสรุปยอด
     total_profit = df_filtered[profit_col].sum() if profit_col else 0.0
     total_trades = len(df_filtered)
     
@@ -213,17 +194,16 @@ else:
 
     tab1, tab2, tab3 = st.tabs(["📅 ตารางปฏิทิน", "📈 กราฟสถิติ", "📜 ประวัติออเดอร์"])
 
-    # -------------------------------------------------------------
     # TAB 1: CALENDAR GRID WITH WEEKLY SUMMARY
-    # -------------------------------------------------------------
     with tab1:
         st.subheader("📅 ตารางปฏิทินกำไร/ขาดทุนรายวัน และสรุปรายสัปดาห์")
         
         if 'Date' in df_filtered.columns and profit_col:
-            # สรุปข้อมูลตามวัน: [Profit Sum, Trades Count, Win Count, Loss Count]
             daily_stats = {}
             grouped = df_filtered.groupby('Date')
             for date_val, group in grouped:
+                if pd.isnull(date_val):
+                    continue
                 pnl = group[profit_col].sum()
                 trades = len(group)
                 wins = len(group[group[profit_col] > 0])
@@ -254,27 +234,23 @@ else:
 
             st.markdown(f"### {sel_month_name} {sel_year}")
 
-            # Header 8 คอลัมน์ (Sun -> Sat + Weekly Total)
             days_header = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
             cols = st.columns(8)
             for i, h in enumerate(days_header):
                 cols[i].markdown(f"<div class='cal-header'>{h}</div>", unsafe_allow_html=True)
             cols[7].markdown("<div class='cal-header-sum'>Weekly Sum</div>", unsafe_allow_html=True)
 
-            # Calendar Matrix (Sunday First)
             cal_obj = calendar.Calendar(firstweekday=6)
             month_weeks = cal_obj.monthdayscalendar(sel_year, sel_month)
 
             for week in month_weeks:
                 cols = st.columns(8)
                 
-                # ตัวแปรเก็บผลรวมรายสัปดาห์
                 w_pnl = 0.0
                 w_trades = 0
                 w_win = 0
                 w_loss = 0
 
-                # 7 วันในสัปดาห์
                 for day_idx, day_num in enumerate(week):
                     if day_num == 0:
                         cols[day_idx].markdown("<div class='cal-day-box'></div>", unsafe_allow_html=True)
@@ -312,7 +288,6 @@ else:
 
                         cols[day_idx].markdown(content_html, unsafe_allow_html=True)
 
-                # คอลัมน์ที่ 8: Weekly Total
                 w_pnl_class = "profit-green" if w_pnl >= 0 else "profit-red"
                 w_sign = "+" if w_pnl >= 0 else ""
                 
@@ -328,33 +303,21 @@ else:
                 """
                 cols[7].markdown(sum_html, unsafe_allow_html=True)
 
-    # -------------------------------------------------------------
     # TAB 2: PERFORMANCE GRAPH
-    # -------------------------------------------------------------
     with tab2:
         st.subheader("📈 กราฟการเติบโตของพอร์ต (Cumulative Profit)")
         if 'datetime_parsed' in df_filtered.columns and profit_col:
-            df_sorted = df_filtered.sort_values('datetime_parsed')
+            df_sorted = df_filtered.dropna(subset=['datetime_parsed']).sort_values('datetime_parsed')
             df_sorted['cum_profit'] = df_sorted[profit_col].cumsum()
             fig = px.line(df_sorted, x='datetime_parsed', y='cum_profit', 
                           labels={'datetime_parsed': 'เวลา', 'cum_profit': 'กำไรสะสม ($)'},
                           template="plotly_dark")
             st.plotly_chart(fig, use_container_width=True)
 
-    # -------------------------------------------------------------
     # TAB 3: TRADE LOGS
-    # -------------------------------------------------------------
     with tab3:
         st.subheader("📋 ประวัติการเทรดทั้งหมด (Trade Logs)")
-        
         display_df = df_filtered.copy()
-        
-        # จัดเรียงคอลัมน์ให้อยู่ในรูปแบบที่อ่านง่าย
-        cols = ['การปิดออเดอร์'] + [c for c in display_df.columns if c != 'การปิดออเดอร์']
-        display_df = display_df[cols]
-        
-        # นำคอลัมน์ส่วนเกินที่ใช้นับค่าออก
-        cols_to_drop = ['commission', 'swap', 'fee', 'time_msc', 'datetime_parsed', 'Date', 'cum_profit', 'type_display']
+        cols_to_drop = ['commission', 'swap', 'fee', 'time_msc', 'datetime_parsed', 'Date', 'cum_profit']
         display_df = display_df.drop(columns=[c for c in cols_to_drop if c in display_df.columns])
-        
         st.dataframe(display_df, use_container_width=True)
