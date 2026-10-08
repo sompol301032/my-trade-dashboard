@@ -30,7 +30,8 @@ st.sidebar.header("⚙️ ตัวเลือกข้อมูล")
 uploaded_file = st.sidebar.file_uploader("อัปโหลดไฟล์ CSV ประวัติการเทรด", type=["csv"])
 
 def clean_number(val):
-    if pd.isnull(val): return 0.0
+    if pd.isnull(val):
+        return 0.0
     val_str = str(val).strip()
     if val_str.startswith('(') and val_str.endswith(')'):
         val_str = '-' + val_str[1:-1]
@@ -42,15 +43,20 @@ def clean_number(val):
 
 def process_trade_data(file):
     file.seek(0)
-    lines = [line.decode('utf-8', errors='ignore') if isinstance(line, bytes) else str(line) for line in file.readlines()]
-    
+    raw_bytes = file.read()
+    try:
+        content = raw_bytes.decode('utf-8')
+    except:
+        content = raw_bytes.decode('latin-1', errors='ignore')
+
+    lines = content.splitlines()
     header_idx = 0
     for idx, line in enumerate(lines):
         line_lower = line.lower()
         if ('profit' in line_lower or 'p/l' in line_lower) and ('time' in line_lower or 'date' in line_lower):
             header_idx = idx
             break
-            
+
     file.seek(0)
     df = pd.read_csv(file, skiprows=header_idx)
     df.columns = [str(c).strip() for c in df.columns]
@@ -60,13 +66,11 @@ def process_trade_data(file):
     time_col = next((c for c in df.columns if 'close time' in c.lower() or 'time' in c.lower() or 'date' in c.lower()), None)
     ticket_col = next((c for c in df.columns if c.lower() in ['ticket', 'order', 'position', 'deal']), None)
 
-    # กรองเฉพาะประเภท buy และ sell แท้จริงเท่านั้น (ตัด deposit, balance, cancelled)
     if type_col:
         df = df[df[type_col].astype(str).str.lower().str.strip().isin(['buy', 'sell'])].copy()
 
-    # กรองเฉพาะแถวที่มีเลข Ticket ชัดเจน
     if ticket_col:
-        df = df[pd.to_numeric(df[ticket_col].astype(str).str.replace('#',''), errors='coerce').notnull()].copy()
+        df = df[pd.to_numeric(df[ticket_col].astype(str).str.replace('#', ''), errors='coerce').notnull()].copy()
 
     if profit_col:
         df['Profit_Clean'] = df[profit_col].apply(clean_number)
@@ -102,11 +106,12 @@ if uploaded_file is not None:
 
         with tab1:
             st.subheader("📅 ตารางปฏิทินกำไร/ขาดทุนรายวัน และสรุปรายสัปดาห์")
-            
+
             if 'Date' in df.columns and not df.empty:
                 daily_stats = {}
                 for date_val, group in df.groupby('Date'):
-                    if pd.isnull(date_val): continue
+                    if pd.isnull(date_val):
+                        continue
                     pnl = group[profit_col].sum()
                     daily_stats[date_val] = {
                         'pnl': pnl,
@@ -114,17 +119,17 @@ if uploaded_file is not None:
                         'win': len(group[group[profit_col] > 0]),
                         'loss': len(group[group[profit_col] < 0])
                     }
-                
+
                 all_dates = list(df['Date'].dropna())
                 latest_date = max(all_dates) if all_dates else datetime.now().date()
                 available_years = sorted(list(set(d.year for d in all_dates)), reverse=True) if all_dates else [latest_date.year]
 
                 c_year, c_month = st.columns(2)
                 sel_year = c_year.selectbox("ปี:", available_years, index=0)
-                
-                thai_months = ["มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน", 
+
+                thai_months = ["มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน",
                                "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม"]
-                
+
                 sel_month_name = c_month.selectbox("เดือน:", thai_months, index=latest_date.month - 1)
                 sel_month = thai_months.index(sel_month_name) + 1
 
@@ -149,7 +154,7 @@ if uploaded_file is not None:
                         else:
                             cur_date = datetime(sel_year, sel_month, day_num).date()
                             stats = daily_stats.get(cur_date, None)
-                            
+
                             if stats:
                                 w_pnl += stats['pnl']
                                 w_trades += stats['trades']
@@ -160,7 +165,7 @@ if uploaded_file is not None:
                                 pnl_class = "profit-green" if pnl_val >= 0 else "profit-red"
                                 box_class = "cal-day-box-active" if pnl_val >= 0 else "cal-day-box-loss"
                                 sign = "+" if pnl_val >= 0 else ""
-                                
+
                                 content_html = f"""
                                 <div class='{box_class}'>
                                     <div class='cal-day-num'>{day_num}</div>
@@ -183,7 +188,7 @@ if uploaded_file is not None:
 
                     w_pnl_class = "profit-green" if w_pnl >= 0 else "profit-red"
                     w_sign = "+" if w_pnl >= 0 else ""
-                    
+
                     sum_html = f"""
                     <div class='cal-day-box-sum'>
                         <div class='cal-day-num' style='color:#3fb950;'>SUM</div>
@@ -201,7 +206,7 @@ if uploaded_file is not None:
             if 'datetime_parsed' in df.columns and not df.empty:
                 df_sorted = df.sort_values('datetime_parsed')
                 df_sorted['cum_profit'] = df_sorted[profit_col].cumsum()
-                fig = px.line(df_sorted, x='datetime_parsed', y='cum_profit', 
+                fig = px.line(df_sorted, x='datetime_parsed', y='cum_profit',
                               labels={'datetime_parsed': 'เวลา', 'cum_profit': 'กำไรสะสม ($)'},
                               template="plotly_dark")
                 st.plotly_chart(fig, use_container_width=True)
