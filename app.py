@@ -55,15 +55,17 @@ def process_trade_data(file):
     df = pd.read_csv(file, skiprows=header_idx)
     df.columns = [str(c).strip() for c in df.columns]
 
+    # ค้นหาคอลัมน์สำคัญ
     type_col = next((c for c in df.columns if c.lower() in ['type', 'cmd', 'action']), None)
     profit_col = next((c for c in df.columns if 'profit' in c.lower() or 'p/l' in c.lower()), None)
-    time_col = next((c for c in df.columns if 'time' in c.lower() or 'date' in c.lower() or 'open time' in c.lower()), None)
+    time_col = next((c for c in df.columns if 'close time' in c.lower() or 'time' in c.lower() or 'date' in c.lower()), None)
     ticket_col = next((c for c in df.columns if c.lower() in ['ticket', 'order', 'position', 'deal']), None)
 
+    # กรองเฉพาะประเภทออเดอร์ที่เป็น buy และ sell แท้จริงเท่านั้น (ตัด deposit, balance, credit, cancelled)
     if type_col:
-        valid_types = ['buy', 'sell', 'buy limit', 'sell limit', 'buy stop', 'sell stop']
-        df = df[df[type_col].astype(str).str.lower().str.strip().isin(valid_types)].copy()
+        df = df[df[type_col].astype(str).str.lower().str.strip().isin(['buy', 'sell'])].copy()
 
+    # กรองเฉพาะแถวที่มีเลข Ticket ชัดเจน
     if ticket_col:
         df = df[pd.to_numeric(df[ticket_col].astype(str).str.replace('#',''), errors='coerce').notnull()].copy()
 
