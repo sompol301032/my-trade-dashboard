@@ -26,12 +26,12 @@ st.markdown("""
 st.title("📊 Trade Manager Dashboard")
 
 st.sidebar.header("⚙️ ตัวเลือกข้อมูล")
+
 uploaded_file = st.sidebar.file_uploader("อัปโหลดไฟล์ CSV ประวัติการเทรด", type=["csv"])
 
 def clean_number(val):
     if pd.isnull(val): return 0.0
     val_str = str(val).strip()
-    # จัดการกรณีเครื่องหมายลบอยู่ในวงเล็บ เช่น (100.50)
     if val_str.startswith('(') and val_str.endswith(')'):
         val_str = '-' + val_str[1:-1]
     val_str = re.sub(r'[^0-9.-]', '', val_str)
@@ -40,44 +40,38 @@ def clean_number(val):
     except:
         return 0.0
 
-def parse_trade_csv(file):
+def process_trade_data(file):
     file.seek(0)
     lines = [line.decode('utf-8', errors='ignore') if isinstance(line, bytes) else str(line) for line in file.readlines()]
     
-    # ค้นหาแถวที่เป็น Header จริง
     header_idx = 0
     for idx, line in enumerate(lines):
         line_lower = line.lower()
-        if ('time' in line_lower or 'date' in line_lower) and ('profit' in line_lower or 'p/l' in line_lower):
+        if ('profit' in line_lower or 'p/l' in line_lower) and ('time' in line_lower or 'date' in line_lower):
             header_idx = idx
             break
             
     file.seek(0)
     df = pd.read_csv(file, skiprows=header_idx)
     df.columns = [str(c).strip() for c in df.columns]
-    
-    # ระบุคอลัมน์สำคัญ
+
     type_col = next((c for c in df.columns if c.lower() in ['type', 'cmd', 'action']), None)
     profit_col = next((c for c in df.columns if 'profit' in c.lower() or 'p/l' in c.lower()), None)
     time_col = next((c for c in df.columns if 'time' in c.lower() or 'date' in c.lower() or 'open time' in c.lower()), None)
     ticket_col = next((c for c in df.columns if c.lower() in ['ticket', 'order', 'position', 'deal']), None)
 
-    # กรองเฉพาะประเภทออเดอร์ที่เป็นการเทรดจริง (ตัด balance, credit, deposit, withdrawal ออก)
     if type_col:
         valid_types = ['buy', 'sell', 'buy limit', 'sell limit', 'buy stop', 'sell stop']
         df = df[df[type_col].astype(str).str.lower().str.strip().isin(valid_types)].copy()
-    
-    # ตัดบรรทัดสรุปผลรวมหรือบรรทัดไม่มี Ticket
+
     if ticket_col:
         df = df[pd.to_numeric(df[ticket_col].astype(str).str.replace('#',''), errors='coerce').notnull()].copy()
 
-    # แปลงและคลีนค่า Profit
     if profit_col:
         df['Profit_Clean'] = df[profit_col].apply(clean_number)
     else:
         df['Profit_Clean'] = 0.0
 
-    # แปลงวันที่
     if time_col:
         df['datetime_parsed'] = pd.to_datetime(df[time_col], errors='coerce')
         df = df[df['datetime_parsed'].notnull()].copy()
@@ -87,8 +81,8 @@ def parse_trade_csv(file):
 
 if uploaded_file is not None:
     try:
-        df = parse_trade_csv(uploaded_file)
-        
+        df = process_trade_data(uploaded_file)
+
         profit_col = 'Profit_Clean'
         total_profit = df[profit_col].sum()
         total_trades = len(df)
@@ -203,7 +197,7 @@ if uploaded_file is not None:
 
         with tab2:
             st.subheader("📈 กราฟการเติบโตของพอร์ต (Cumulative Profit)")
-            if 'datetime_parsed' in df.columns:
+            if 'datetime_parsed' in df.columns and not df.empty:
                 df_sorted = df.sort_values('datetime_parsed')
                 df_sorted['cum_profit'] = df_sorted[profit_col].cumsum()
                 fig = px.line(df_sorted, x='datetime_parsed', y='cum_profit', 
@@ -219,6 +213,6 @@ if uploaded_file is not None:
             st.dataframe(display_df, use_container_width=True)
 
     except Exception as e:
-        st.error(f"เกิดข้อผิดพลาดในการประมวลผล: {e}")
+        st.error(f"เกิดข้อผิดพลาดในการประมวลผลไฟล์: {e}")
 else:
     st.info("👋 กรุณาอัปโหลดไฟล์ CSV ประวัติการเทรดผ่านแถบเมนูด้านข้าง (Sidebar) เพื่อเริ่มใช้งาน")
