@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import calendar
+import re
 from datetime import datetime
 
 st.set_page_config(page_title="Trade Manager Dashboard", layout="wide")
@@ -12,6 +13,7 @@ st.markdown("""
     .cal-header-sum { text-align: center; font-weight: bold; padding: 10px 4px; background-color: #0d2818; color: #3fb950; border-radius: 6px; margin-bottom: 6px; font-size: 13px; border: 1px solid #238636; }
     .cal-day-box { background-color: #0d1117; border: 1px solid #21262d; border-radius: 8px; padding: 8px 6px; min-height: 95px; margin-bottom: 6px; display: flex; flex-direction: column; justify-content: space-between; }
     .cal-day-box-active { background-color: #122119; border: 1px solid #238636; border-radius: 8px; padding: 8px 6px; min-height: 95px; margin-bottom: 6px; display: flex; flex-direction: column; justify-content: space-between; }
+    .cal-day-box-loss { background-color: #211213; border: 1px solid #862323; border-radius: 8px; padding: 8px 6px; min-height: 95px; margin-bottom: 6px; display: flex; flex-direction: column; justify-content: space-between; }
     .cal-day-box-sum { background-color: #0b1d13; border: 1px solid #238636; border-radius: 8px; padding: 8px 6px; min-height: 95px; margin-bottom: 6px; display: flex; flex-direction: column; justify-content: space-between; }
     .cal-day-num { font-size: 12px; color: #8b949e; font-weight: bold; text-align: right; }
     .profit-green { color: #3fb950; font-weight: 800; font-size: 14px; margin-top: 2px; }
@@ -26,13 +28,27 @@ st.title("📊 Trade Manager Dashboard")
 st.sidebar.header("⚙️ ตัวเลือกข้อมูล")
 uploaded_file = st.sidebar.file_uploader("อัปโหลดไฟล์ CSV ประวัติการเทรด", type=["csv"])
 
-def parse_mt5_csv(file):
+def clean_number(val):
+    if pd.isnull(val): return 0.0
+    val_str = str(val).strip()
+    # จัดการกรณีเครื่องหมายลบอยู่ในวงเล็บ เช่น (100.50)
+    if val_str.startswith('(') and val_str.endswith(')'):
+        val_str = '-' + val_str[1:-1]
+    val_str = re.sub(r'[^0-9.-]', '', val_str)
+    try:
+        return float(val_str)
+    except:
+        return 0.0
+
+def parse_trade_csv(file):
     file.seek(0)
     lines = [line.decode('utf-8', errors='ignore') if isinstance(line, bytes) else str(line) for line in file.readlines()]
     
+    # ค้นหาแถวที่เป็น Header จริง
     header_idx = 0
     for idx, line in enumerate(lines):
-        if 'Time' in line and 'Profit' in line:
+        line_lower = line.lower()
+        if ('time' in line_lower or 'date' in line_lower) and ('profit' in line_lower or 'p/l' in line_lower):
             header_idx = idx
             break
             
@@ -40,44 +56,44 @@ def parse_mt5_csv(file):
     df = pd.read_csv(file, skiprows=header_idx)
     df.columns = [str(c).strip() for c in df.columns]
     
-    # กรองเอาเฉพาะออเดอร์ที่เป็น buy/sell
-    type_col = next((c for c in df.columns if c.lower() == 'type'), None)
-    if type_col:
-        df = df[df[type_col].astype(str).str.lower().isin(['buy', 'sell'])].copy()
-        
-    # คัดกรองบรรทัดสรุป
-    ticket_col = next((c for c in df.columns if c.lower() in ['ticket', 'position']), None)
-    if ticket_col:
-        df = df[pd.to_numeric(df[ticket_col], errors='coerce').notnull()].copy()
+    # ระบุคอลัมน์สำคัญ
+    type_col = next((c for c in df.columns if c.lower() in ['type', 'cmd', 'action']), None)
+    profit_col = next((c for c in df.columns if 'profit' in c.lower() or 'p/l' in c.lower()), None)
+    time_col = next((c for c in df.columns if 'time' in c.lower() or 'date' in c.lower() or 'open time' in c.lower()), None)
+    ticket_col = next((c for c in df.columns if c.lower() in ['ticket', 'order', 'position', 'deal']), None)
 
-    # แปลงเวลา
-    time_col = next((c for c in df.columns if 'time' in c.lower()), None)
+    # กรองเฉพาะประเภทออเดอร์ที่เป็นการเทรดจริง (ตัด balance, credit, deposit, withdrawal ออก)
+    if type_col:
+        valid_types = ['buy', 'sell', 'buy limit', 'sell limit', 'buy stop', 'sell stop']
+        df = df[df[type_col].astype(str).str.lower().str.strip().isin(valid_types)].copy()
+    
+    # ตัดบรรทัดสรุปผลรวมหรือบรรทัดไม่มี Ticket
+    if ticket_col:
+        df = df[pd.to_numeric(df[ticket_col].astype(str).str.replace('#',''), errors='coerce').notnull()].copy()
+
+    # แปลงและคลีนค่า Profit
+    if profit_col:
+        df['Profit_Clean'] = df[profit_col].apply(clean_number)
+    else:
+        df['Profit_Clean'] = 0.0
+
+    # แปลงวันที่
     if time_col:
         df['datetime_parsed'] = pd.to_datetime(df[time_col], errors='coerce')
         df = df[df['datetime_parsed'].notnull()].copy()
         df['Date'] = df['datetime_parsed'].dt.date
 
-    # แปลงกำไร
-    profit_col = next((c for c in df.columns if 'profit' in c.lower()), None)
-    if profit_col:
-        df['Profit_Clean'] = (df[profit_col].astype(str)
-                              .str.replace('$', '', regex=False)
-                              .str.replace(',', '', regex=False)
-                              .str.strip())
-        df['Profit_Clean'] = pd.to_numeric(df['Profit_Clean'], errors='coerce').fillna(0.0)
-    else:
-        df['Profit_Clean'] = 0.0
-
     return df
 
 if uploaded_file is not None:
     try:
-        df = parse_mt5_csv(uploaded_file)
+        df = parse_trade_csv(uploaded_file)
         
         profit_col = 'Profit_Clean'
         total_profit = df[profit_col].sum()
         total_trades = len(df)
         win_trades = len(df[df[profit_col] > 0])
+        loss_trades = len(df[df[profit_col] < 0])
         win_rate = (win_trades / total_trades * 100) if total_trades > 0 else 0
 
         col1, col2, col3 = st.columns(3)
@@ -92,7 +108,7 @@ if uploaded_file is not None:
         with tab1:
             st.subheader("📅 ตารางปฏิทินกำไร/ขาดทุนรายวัน และสรุปรายสัปดาห์")
             
-            if 'Date' in df.columns:
+            if 'Date' in df.columns and not df.empty:
                 daily_stats = {}
                 for date_val, group in df.groupby('Date'):
                     if pd.isnull(date_val): continue
@@ -147,10 +163,11 @@ if uploaded_file is not None:
 
                                 pnl_val = stats['pnl']
                                 pnl_class = "profit-green" if pnl_val >= 0 else "profit-red"
+                                box_class = "cal-day-box-active" if pnl_val >= 0 else "cal-day-box-loss"
                                 sign = "+" if pnl_val >= 0 else ""
                                 
                                 content_html = f"""
-                                <div class='cal-day-box-active'>
+                                <div class='{box_class}'>
                                     <div class='cal-day-num'>{day_num}</div>
                                     <div>
                                         <div class='{pnl_class}'>{sign}${pnl_val:,.2f}</div>
