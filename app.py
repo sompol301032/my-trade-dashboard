@@ -64,19 +64,22 @@ def process_trade_data(file):
     df = pd.read_csv(file, skiprows=header_idx)
     df.columns = [str(c).strip() for c in df.columns]
 
-    type_col = next((c for c in df.columns if c.lower() in ['type', 'cmd', 'action']), None)
+    # ค้นหาคอลัมน์สำคัญ
+    type_col = next((c for c in df.columns if c.lower() in ['type', 'cmd', 'action', 'item']), None)
     profit_col = next((c for c in df.columns if 'profit' in c.lower() or 'p/l' in c.lower()), None)
     time_col = next((c for c in df.columns if 'close time' in c.lower() or 'time' in c.lower() or 'date' in c.lower()), None)
     ticket_col = next((c for c in df.columns if c.lower() in ['ticket', 'order', 'position', 'deal']), None)
     entry_col = next((c for c in df.columns if c.lower() in ['entry', 'direction', 'in/out']), None)
 
-    # 1. กรองเฉพาะประเภท buy และ sell แท้จริงเท่านั้น (ตัด deposit, balance, credit, cancelled ออก)
+    # 1. กรองเฉพาะประเภท buy และ sell เท่านั้น (ตัด balance, deposit, credit, cancellation ออก)
     if type_col:
         df = df[df[type_col].astype(str).str.lower().str.strip().isin(['buy', 'sell'])].copy()
 
-    # 2. กรองเฉพาะรายการปิดออเดอร์ (out / in/out) เพื่อไม่ให้นับจังหวะเปิด (in) ซ้ำ
+    # 2. กรองเฉพาะออเดอร์ที่ปิดแล้ว (out / in/out) เพื่อไม่ให้นับจังหวะเปิด (in) ซ้ำ
     if entry_col:
-        df = df[df[entry_col].astype(str).str.lower().str.strip().isin(['out', 'in/out', 'in / out'])].copy()
+        valid_entries = ['out', 'in/out', 'in / out']
+        if df[entry_col].astype(str).str.lower().str.strip().isin(valid_entries).any():
+            df = df[df[entry_col].astype(str).str.lower().str.strip().isin(valid_entries)].copy()
 
     # 3. กรองเฉพาะแถวที่มีเลข Ticket ชัดเจน
     if ticket_col:
