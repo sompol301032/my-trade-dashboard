@@ -53,8 +53,6 @@ def process_trade_data(file):
             content = raw_bytes.decode('latin-1', errors='ignore')
 
     lines = content.splitlines()
-    
-    # 1. หาจุดเริ่มต้นตารางที่มีคอลัมน์ Profit และ Time
     header_idx = 0
     for idx, line in enumerate(lines):
         line_lower = line.lower()
@@ -66,34 +64,33 @@ def process_trade_data(file):
     df = pd.read_csv(file, skiprows=header_idx)
     df.columns = [str(c).strip() for c in df.columns]
 
-    # ค้นหาชื่อคอลัมน์ตามโครงสร้าง MT4 / MT5
     type_col = next((c for c in df.columns if c.lower() in ['type', 'cmd', 'action', 'item']), None)
     profit_col = next((c for c in df.columns if 'profit' in c.lower() or 'p/l' in c.lower()), None)
     time_col = next((c for c in df.columns if 'close time' in c.lower() or 'time' in c.lower() or 'date' in c.lower()), None)
     ticket_col = next((c for c in df.columns if c.lower() in ['ticket', 'order', 'position', 'deal']), None)
     entry_col = next((c for c in df.columns if c.lower() in ['entry', 'direction', 'in/out']), None)
 
-    # 2. กรองเอาประเภทออเดอร์ที่เป็น Buy หรือ Sell เท่านั้น (ตัด balance, deposit, credit, withdrawal ออกทั้งหมด)
+    # 1. คัดเฉพาะประเภท Buy และ Sell แท้จริงเท่านั้น (ตัด balance, deposit, credit, withdrawal ออกสิ้นเชิง)
     if type_col:
         df = df[df[type_col].astype(str).str.lower().str.strip().isin(['buy', 'sell'])].copy()
 
-    # 3. ถ้าเป็นไฟล์ MT5 Deals: กรองเฉพาะ 'out' (รายการปิดออเดอร์ที่คิด Profit สุทธิ)
+    # 2. กรองเอาเฉพาะออเดอร์ขาออก (out หรือ in/out) ตัดจังหวะเปิดไม้ (in) เพื่อไม่ให้นับสองเท่า
     if entry_col:
         valid_entries = ['out', 'in/out', 'in / out']
         if df[entry_col].astype(str).str.lower().str.strip().isin(valid_entries).any():
             df = df[df[entry_col].astype(str).str.lower().str.strip().isin(valid_entries)].copy()
 
-    # 4. กรองแถวที่ไม่ใช่ออเดอร์จริงออกด้วย Ticket ID
+    # 3. กรองเอาเฉพาะแถวที่มีเลข Ticket / Position ID ชัดเจน
     if ticket_col:
         df = df[pd.to_numeric(df[ticket_col].astype(str).str.replace('#', ''), errors='coerce').notnull()].copy()
 
-    # 5. แปลงคอลัมน์ Profit เป็นตัวเลข
+    # 4. แปลงค่า Profit ให้ถูกต้อง
     if profit_col:
         df['Profit_Clean'] = df[profit_col].apply(clean_number)
     else:
         df['Profit_Clean'] = 0.0
 
-    # 6. คัดเลือกเฉพาะออเดอร์ที่ Profit ไม่เท่ากับ 0 หรือแปลงวันที่ผ่าน
+    # 5. กรองเฉพาะแถวที่แปลงวันที่ผ่าน
     if time_col:
         df['datetime_parsed'] = pd.to_datetime(df[time_col], errors='coerce')
         df = df[df['datetime_parsed'].notnull()].copy()
