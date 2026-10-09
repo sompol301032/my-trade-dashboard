@@ -45,9 +45,12 @@ def process_trade_data(file):
     file.seek(0)
     raw_bytes = file.read()
     try:
-        content = raw_bytes.decode('utf-8')
+        content = raw_bytes.decode('utf-8-sig')
     except:
-        content = raw_bytes.decode('latin-1', errors='ignore')
+        try:
+            content = raw_bytes.decode('utf-8')
+        except:
+            content = raw_bytes.decode('latin-1', errors='ignore')
 
     lines = content.splitlines()
     header_idx = 0
@@ -67,15 +70,15 @@ def process_trade_data(file):
     ticket_col = next((c for c in df.columns if c.lower() in ['ticket', 'order', 'position', 'deal']), None)
     entry_col = next((c for c in df.columns if c.lower() in ['entry', 'direction', 'in/out']), None)
 
-    # 1. กรองเอาเฉพาะประเภทออเดอร์ที่เป็น Buy หรือ Sell เท่านั้น
+    # 1. กรองเฉพาะประเภท buy และ sell แท้จริงเท่านั้น (ตัด deposit, balance, credit, cancelled ออก)
     if type_col:
         df = df[df[type_col].astype(str).str.lower().str.strip().isin(['buy', 'sell'])].copy()
 
-    # 2. กรองเฉพาะรายการปิดออเดอร์ (out / in/out) ตัดรายการเปิด (in) ออกเพื่อไม่ให้นับซ้ำ
+    # 2. กรองเฉพาะรายการปิดออเดอร์ (out / in/out) เพื่อไม่ให้นับจังหวะเปิด (in) ซ้ำ
     if entry_col:
         df = df[df[entry_col].astype(str).str.lower().str.strip().isin(['out', 'in/out', 'in / out'])].copy()
 
-    # 3. กรองเฉพาะแถวที่มีเลข Ticket สมบูรณ์
+    # 3. กรองเฉพาะแถวที่มีเลข Ticket ชัดเจน
     if ticket_col:
         df = df[pd.to_numeric(df[ticket_col].astype(str).str.replace('#', ''), errors='coerce').notnull()].copy()
 
