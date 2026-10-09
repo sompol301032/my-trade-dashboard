@@ -67,15 +67,15 @@ def process_trade_data(file):
     ticket_col = next((c for c in df.columns if c.lower() in ['ticket', 'order', 'position', 'deal']), None)
     entry_col = next((c for c in df.columns if c.lower() in ['entry', 'direction', 'in/out']), None)
 
-    # 1. กรองเอาเฉพาะประเภทออเดอร์ที่เป็น Buy หรือ Sell เท่านั้น
+    # 1. กรองเฉพาะประเภทออเดอร์ที่เป็น buy และ sell แท้จริงเท่านั้น (ตัด deposit, balance, credit ออก)
     if type_col:
         df = df[df[type_col].astype(str).str.lower().str.strip().isin(['buy', 'sell'])].copy()
 
-    # 2. ถ้าเป็นรายงาน MT5 ที่มีคอลัมน์ Entry ให้กรองเอาเฉพาะ 'out' หรือ 'in/out' (รายการปิดออเดอร์ที่เกิด Profit จริง)
+    # 2. กรองเฉพาะรายการปิดออเดอร์ (out / in/out) เพื่อไม่ให้นับจังหวะเปิด (in) ซ้ำ
     if entry_col:
         df = df[df[entry_col].astype(str).str.lower().str.strip().isin(['out', 'in/out', 'in / out'])].copy()
 
-    # 3. กรองเฉพาะแถวที่มีเลข Ticket สมบูรณ์
+    # 3. กรองเฉพาะแถวที่มีเลข Ticket ชัดเจน
     if ticket_col:
         df = df[pd.to_numeric(df[ticket_col].astype(str).str.replace('#', ''), errors='coerce').notnull()].copy()
 
