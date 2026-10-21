@@ -27,22 +27,21 @@ st.title("📊 Trade Manager Dashboard")
 
 st.sidebar.header("⚙️ ตัวเลือกข้อมูล")
 
-uploaded_file = st.sidebar.file_uploader("อัปโหลดไฟล์ CSV ประวัติการเทรด", type=["csv"], key="uploader_fix_loss")
+uploaded_file = st.sidebar.file_uploader("อัปโหลดไฟล์ CSV ประวัติการเทรด", type=["csv"], key="uploader_exness_fix")
 
 def clean_number(val):
     if pd.isnull(val):
         return 0.0
     val_str = str(val).strip()
     
-    # รองรับกรณีวงเล็บเช่น (15.9) -> -15.9
+    # ตรวจสอบเครื่องหมายติดลบ
     is_negative = False
-    if val_str.startswith('(') and val_str.endswith(')'):
+    if val_str.startswith('-') or ('-' in val_str and not val_str.startswith('202')):
         is_negative = True
-        val_str = val_str[1:-1]
-    elif val_str.startswith('-'):
+    elif val_str.startswith('(') and val_str.endswith(')'):
         is_negative = True
 
-    # เก็บเฉพาะตัวเลขและจุดทศนิยม
+    # ดึงเฉพาะตัวเลขและจุดทศนิยม
     cleaned = re.sub(r'[^0-9.]', '', val_str)
     try:
         num = float(cleaned)
@@ -65,43 +64,56 @@ def process_trade_data(file):
     header_idx = 0
     for idx, line in enumerate(lines):
         line_lower = line.lower()
-        if ('profit' in line_lower or 'p/l' in line_lower) and ('time' in line_lower or 'date' in line_lower or 'price' in line_lower):
+        if ('profit' in line_lower or 'p/l' in line_lower or 'กำไร' in line_lower) and ('time' in line_lower or 'date' in line_lower or 'เวลา' in line_lower or 'xau' in line_lower):
             header_idx = idx
             break
 
     file.seek(0)
     df = pd.read_csv(file, skiprows=header_idx)
-    df.columns = [str(c).strip().lower() for c in df.columns]
+    df.columns = [str(c).strip() for c in df.columns]
 
-    # ค้นหาคอลัมน์สำคัญ
-    profit_col = next((c for c in df.columns if 'profit' in c or 'p/l' in c), None)
-    time_col = next((c for c in df.columns if 'time' in c or 'date' in c or 'close' in c), None)
-    type_col = next((c for c in df.columns if c in ['type', 'cmd', 'action', 'item']), None)
-    entry_col = next((c for c in df.columns if c in ['entry', 'direction', 'in/out']), None)
+    # ค้นหาคอลัมน์ Profit (ดึงจากคอลัมน์ขวาสุดถ้ามีคำว่า profit หรือ p/l หรืออยู่ช่องท้ายสุด)
+    profit_col = None
+    for c in reversed(df.columns):
+        c_lower = c.lower()
+        if 'profit' in c_lower or 'p/l' in c_lower or 'กำไร' in c_lower:
+            profit_col = c
+            break
+            
+    if not profit_col:
+        # ถ้าหาชื่อคอลัมน์ไม่เจอ ให้ใช้คอลัมน์ขวาสุดของตาราง
+        profit_col = df.columns[-1]
 
-    # 1. กรองออเดอร์ Buy / Sell
+    # ค้นหาคอลัมน์ประเภทออเดอร์
+    type_col = next((c for c in df.columns if c.lower() in ['type', 'cmd', 'action', 'item', 'ประเภท']), None)
+    
+    # ค้นหาคอลัมน์เวลา
+    time_col = next((c for c in df.columns if any(k in c.lower() for k in ['close time', 'time', 'date', 'เวลา', 'ปิด'])), None)
+    if not time_col:
+        time_col = df.columns[2] if len(df.columns) > 2 else df.columns[0]
+
+    # กรองเฉพาะประเภท Buy/Sell
     if type_col:
         df = df[df[type_col].astype(str).str.lower().str.strip().isin(['buy', 'sell'])].copy()
 
-    # 2. กรองออเดอร์ขาปิด out / in/out
-    if entry_col:
-        valid_entries = ['out', 'in/out', 'in / out']
-        if df[entry_col].astype(str).str.lower().str.strip().isin(valid_entries).any():
-            df = df[df[entry_col].astype(str).str.lower().str.strip().isin(valid_entries)].copy()
+    # ทำความสะอาดคอลัมน์ Profit
+    df['Profit_Clean'] = df[profit_col].apply(clean_number)
 
-    # 3. แปลงค่า Profit โดยคงเครื่องหมายลบไว้ถูกต้อง
-    if profit_col:
-        df['Profit_Clean'] = df[profit_col].apply(clean_number)
-    else:
-        df['Profit_Clean'] = 0.0
+    # แปลงคอลัมน์เวลา
+    df['datetime_parsed'] = pd.to_datetime(df[time_col], errors='coerce')
+    
+    # ถ้าแปลงเวลาไม่ผ่าน ให้ลองหาคอลัมน์เวลาคอลัมน์อื่น
+    if df['datetime_parsed'].isnull().all():
+        for col in df.columns:
+            parsed = pd.to_datetime(df[col], errors='coerce')
+            if parsed.notnull().sum() > 0:
+                df['datetime_parsed'] = parsed
+                break
 
-    # 4. แปลงวันที่
-    if time_col:
-        df['datetime_parsed'] = pd.to_datetime(df[time_col], errors='coerce')
-        df = df[df['datetime_parsed'].notnull()].copy()
-        df['Date'] = df['datetime_parsed'].dt.date
-        df['Year'] = df['datetime_parsed'].dt.year
-        df['Month'] = df['datetime_parsed'].dt.month
+    df = df[df['datetime_parsed'].notnull()].copy()
+    df['Date'] = df['datetime_parsed'].dt.date
+    df['Year'] = df['datetime_parsed'].dt.year
+    df['Month'] = df['datetime_parsed'].dt.month
 
     return df
 
