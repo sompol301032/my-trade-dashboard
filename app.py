@@ -27,17 +27,26 @@ st.title("📊 Trade Manager Dashboard")
 
 st.sidebar.header("⚙️ ตัวเลือกข้อมูล")
 
-uploaded_file = st.sidebar.file_uploader("อัปโหลดไฟล์ CSV ประวัติการเทรด", type=["csv"], key="uploader_v3")
+uploaded_file = st.sidebar.file_uploader("อัปโหลดไฟล์ CSV ประวัติการเทรด", type=["csv"], key="uploader_fix_loss")
 
 def clean_number(val):
     if pd.isnull(val):
         return 0.0
     val_str = str(val).strip()
+    
+    # รองรับกรณีวงเล็บเช่น (15.9) -> -15.9
+    is_negative = False
     if val_str.startswith('(') and val_str.endswith(')'):
-        val_str = '-' + val_str[1:-1]
-    val_str = re.sub(r'[^0-9.-]', '', val_str)
+        is_negative = True
+        val_str = val_str[1:-1]
+    elif val_str.startswith('-'):
+        is_negative = True
+
+    # เก็บเฉพาะตัวเลขและจุดทศนิยม
+    cleaned = re.sub(r'[^0-9.]', '', val_str)
     try:
-        return float(val_str)
+        num = float(cleaned)
+        return -num if is_negative else num
     except:
         return 0.0
 
@@ -56,41 +65,37 @@ def process_trade_data(file):
     header_idx = 0
     for idx, line in enumerate(lines):
         line_lower = line.lower()
-        if ('profit' in line_lower or 'p/l' in line_lower) and ('time' in line_lower or 'date' in line_lower):
+        if ('profit' in line_lower or 'p/l' in line_lower) and ('time' in line_lower or 'date' in line_lower or 'price' in line_lower):
             header_idx = idx
             break
 
     file.seek(0)
     df = pd.read_csv(file, skiprows=header_idx)
-    df.columns = [str(c).strip() for c in df.columns]
+    df.columns = [str(c).strip().lower() for c in df.columns]
 
-    type_col = next((c for c in df.columns if c.lower() in ['type', 'cmd', 'action', 'item']), None)
-    profit_col = next((c for c in df.columns if 'profit' in c.lower() or 'p/l' in c.lower()), None)
-    time_col = next((c for c in df.columns if 'close time' in c.lower() or 'time' in c.lower() or 'date' in c.lower()), None)
-    ticket_col = next((c for c in df.columns if c.lower() in ['ticket', 'order', 'position', 'deal']), None)
-    entry_col = next((c for c in df.columns if c.lower() in ['entry', 'direction', 'in/out']), None)
+    # ค้นหาคอลัมน์สำคัญ
+    profit_col = next((c for c in df.columns if 'profit' in c or 'p/l' in c), None)
+    time_col = next((c for c in df.columns if 'time' in c or 'date' in c or 'close' in c), None)
+    type_col = next((c for c in df.columns if c in ['type', 'cmd', 'action', 'item']), None)
+    entry_col = next((c for c in df.columns if c in ['entry', 'direction', 'in/out']), None)
 
-    # 1. กรองเฉพาะประเภท Buy และ Sell เท่านั้น (ตัด Deposit, Balance, Credit, Withdrawal ออก)
+    # 1. กรองออเดอร์ Buy / Sell
     if type_col:
         df = df[df[type_col].astype(str).str.lower().str.strip().isin(['buy', 'sell'])].copy()
 
-    # 2. กรองเฉพาะออเดอร์ขาปิด out / in/out
+    # 2. กรองออเดอร์ขาปิด out / in/out
     if entry_col:
         valid_entries = ['out', 'in/out', 'in / out']
         if df[entry_col].astype(str).str.lower().str.strip().isin(valid_entries).any():
             df = df[df[entry_col].astype(str).str.lower().str.strip().isin(valid_entries)].copy()
 
-    # 3. กรองแถวที่มีเลข Ticket / Position ID ชัดเจน
-    if ticket_col:
-        df = df[pd.to_numeric(df[ticket_col].astype(str).str.replace('#', ''), errors='coerce').notnull()].copy()
-
-    # 4. แปลงคอลัมน์ Profit
+    # 3. แปลงค่า Profit โดยคงเครื่องหมายลบไว้ถูกต้อง
     if profit_col:
         df['Profit_Clean'] = df[profit_col].apply(clean_number)
     else:
         df['Profit_Clean'] = 0.0
 
-    # 5. แปลงวันที่
+    # 4. แปลงวันที่
     if time_col:
         df['datetime_parsed'] = pd.to_datetime(df[time_col], errors='coerce')
         df = df[df['datetime_parsed'].notnull()].copy()
@@ -110,36 +115,35 @@ if uploaded_file is not None:
             available_years = sorted(list(set(d.year for d in all_dates)), reverse=True) if all_dates else [latest_date.year]
 
             c_year, c_month = st.columns(2)
-            sel_year = c_year.selectbox("เลือกปีที่ต้องการดู:", available_years, index=0)
+            sel_year = c_year.selectbox("เลือกปี:", available_years, index=0)
 
             thai_months = ["มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน",
                            "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม"]
 
             default_month_idx = (latest_date.month - 1) if sel_year == latest_date.year else 0
-            sel_month_name = c_month.selectbox("เลือกเดือนที่ต้องการดู:", thai_months, index=default_month_idx)
+            sel_month_name = c_month.selectbox("เลือกเดือน:", thai_months, index=default_month_idx)
             sel_month = thai_months.index(sel_month_name) + 1
 
-            # กรองข้อมูลเฉพาะ "ปี" และ "เดือน" ที่เลือกเพื่อแสดงผลสรุป
             month_df = df[(df['Year'] == sel_year) & (df['Month'] == sel_month)].copy()
 
             profit_col = 'Profit_Clean'
             m_total_profit = month_df[profit_col].sum() if not month_df.empty else 0.0
             m_total_trades = len(month_df)
             m_win_trades = len(month_df[month_df[profit_col] > 0])
+            m_loss_trades = len(month_df[month_df[profit_col] < 0])
             m_win_rate = (m_win_trades / m_total_trades * 100) if m_total_trades > 0 else 0
 
-            # แสดงการ์ดสรุปยอดประจำเดือนที่เลือก
             col1, col2, col3 = st.columns(3)
-            col1.metric(f"กำไรสุทธิประจำเดือน ({sel_month_name} {sel_year})", f"${m_total_profit:,.2f}")
-            col2.metric("จำนวนไม้รวมทั้งเดือน", f"{m_total_trades:,} ไม้")
-            col3.metric("Win Rate ประจำเดือน", f"{m_win_rate:.1f}%")
+            col1.metric(f"กำไร/ขาดทุนสุทธิประจำเดือน ({sel_month_name} {sel_year})", f"${m_total_profit:,.2f}")
+            col2.metric("จำนวนไม้ออเดอร์รวม", f"{m_total_trades:,} ไม้")
+            col3.metric("Win Rate", f"{m_win_rate:.1f}%")
 
             st.markdown("---")
 
             tab1, tab2, tab3 = st.tabs(["📅 ตารางปฏิทิน", "📈 กราฟสถิติ", "📜 ประวัติออเดอร์"])
 
             with tab1:
-                st.subheader(f"📅 ตารางปฏิทินตัดรอบรายวัน และสรุปสัปดาห์ประจำเดือน {sel_month_name} {sel_year}")
+                st.subheader(f"📅 ตารางปฏิทินกำไร/ขาดทุนรายวัน และสรุปสัปดาห์ประจำเดือน {sel_month_name} {sel_year}")
 
                 daily_stats = {}
                 for date_val, group in month_df.groupby('Date'):
