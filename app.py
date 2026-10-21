@@ -5,7 +5,7 @@ import calendar
 import re
 from datetime import datetime
 
-st.set_page_config(page_title="Trade Manager Dashboard", layout="wide")
+st.set_page_config(page_title="Trade Performance Dashboard v2", layout="wide")
 
 st.markdown("""
 <style>
@@ -23,11 +23,12 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.title("📊 Trade Manager Dashboard")
+st.title("📊 Trade Performance Dashboard v2")
 
 st.sidebar.header("⚙️ ตัวเลือกข้อมูล")
 
-uploaded_file = st.sidebar.file_uploader("อัปโหลดไฟล์ CSV ประวัติการเทรด", type=["csv"])
+# เพิ่ม key="file_uploader_v2" เพื่อบังคับล้าง Session State เก่า
+uploaded_file = st.sidebar.file_uploader("อัปโหลดไฟล์ CSV ประวัติการเทรด (XM / Exness)", type=["csv"], key="file_uploader_v2")
 
 def clean_number(val):
     if pd.isnull(val):
@@ -53,6 +54,8 @@ def process_trade_data(file):
             content = raw_bytes.decode('latin-1', errors='ignore')
 
     lines = content.splitlines()
+    
+    # 1. ค้นหาแถวที่เป็น Header จริงของตาราง
     header_idx = 0
     for idx, line in enumerate(lines):
         line_lower = line.lower()
@@ -64,33 +67,34 @@ def process_trade_data(file):
     df = pd.read_csv(file, skiprows=header_idx)
     df.columns = [str(c).strip() for c in df.columns]
 
+    # ค้นหาคอลัมน์แบบยืดหยุ่น
     type_col = next((c for c in df.columns if c.lower() in ['type', 'cmd', 'action', 'item']), None)
     profit_col = next((c for c in df.columns if 'profit' in c.lower() or 'p/l' in c.lower()), None)
     time_col = next((c for c in df.columns if 'close time' in c.lower() or 'time' in c.lower() or 'date' in c.lower()), None)
     ticket_col = next((c for c in df.columns if c.lower() in ['ticket', 'order', 'position', 'deal']), None)
     entry_col = next((c for c in df.columns if c.lower() in ['entry', 'direction', 'in/out']), None)
 
-    # 1. คัดเฉพาะประเภท Buy และ Sell แท้จริงเท่านั้น (ตัด balance, deposit, credit, withdrawal ออกสิ้นเชิง)
+    # กรองเฉพาะประเภท Buy และ Sell (ตัด Deposit, Balance, Credit, Withdrawal ออก)
     if type_col:
         df = df[df[type_col].astype(str).str.lower().str.strip().isin(['buy', 'sell'])].copy()
 
-    # 2. กรองเอาเฉพาะออเดอร์ขาออก (out หรือ in/out) ตัดจังหวะเปิดไม้ (in) เพื่อไม่ให้นับสองเท่า
+    # กรองเอาเฉพาะขาออก out / in/out
     if entry_col:
         valid_entries = ['out', 'in/out', 'in / out']
         if df[entry_col].astype(str).str.lower().str.strip().isin(valid_entries).any():
             df = df[df[entry_col].astype(str).str.lower().str.strip().isin(valid_entries)].copy()
 
-    # 3. กรองเอาเฉพาะแถวที่มีเลข Ticket / Position ID ชัดเจน
+    # กรองแถวที่มีเลข Ticket สด
     if ticket_col:
         df = df[pd.to_numeric(df[ticket_col].astype(str).str.replace('#', ''), errors='coerce').notnull()].copy()
 
-    # 4. แปลงค่า Profit ให้ถูกต้อง
+    # ทำความสะอาดคอลัมน์ Profit
     if profit_col:
         df['Profit_Clean'] = df[profit_col].apply(clean_number)
     else:
         df['Profit_Clean'] = 0.0
 
-    # 5. กรองเฉพาะแถวที่แปลงวันที่ผ่าน
+    # แปลงวันที่
     if time_col:
         df['datetime_parsed'] = pd.to_datetime(df[time_col], errors='coerce')
         df = df[df['datetime_parsed'].notnull()].copy()
