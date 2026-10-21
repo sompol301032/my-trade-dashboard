@@ -5,7 +5,7 @@ import calendar
 import re
 from datetime import datetime
 
-st.set_page_config(page_title="Trade Performance Dashboard v2", layout="wide")
+st.set_page_config(page_title="Trade Manager Dashboard", layout="wide")
 
 st.markdown("""
 <style>
@@ -23,12 +23,11 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.title("📊 Trade Performance Dashboard v2")
+st.title("📊 Trade Manager Dashboard")
 
 st.sidebar.header("⚙️ ตัวเลือกข้อมูล")
 
-# เพิ่ม key="file_uploader_v2" เพื่อบังคับล้าง Session State เก่า
-uploaded_file = st.sidebar.file_uploader("อัปโหลดไฟล์ CSV ประวัติการเทรด (XM / Exness)", type=["csv"], key="file_uploader_v2")
+uploaded_file = st.sidebar.file_uploader("อัปโหลดไฟล์ CSV ประวัติการเทรด", type=["csv"], key="uploader_v3")
 
 def clean_number(val):
     if pd.isnull(val):
@@ -54,8 +53,6 @@ def process_trade_data(file):
             content = raw_bytes.decode('latin-1', errors='ignore')
 
     lines = content.splitlines()
-    
-    # 1. ค้นหาแถวที่เป็น Header จริงของตาราง
     header_idx = 0
     for idx, line in enumerate(lines):
         line_lower = line.lower()
@@ -67,38 +64,39 @@ def process_trade_data(file):
     df = pd.read_csv(file, skiprows=header_idx)
     df.columns = [str(c).strip() for c in df.columns]
 
-    # ค้นหาคอลัมน์แบบยืดหยุ่น
     type_col = next((c for c in df.columns if c.lower() in ['type', 'cmd', 'action', 'item']), None)
     profit_col = next((c for c in df.columns if 'profit' in c.lower() or 'p/l' in c.lower()), None)
     time_col = next((c for c in df.columns if 'close time' in c.lower() or 'time' in c.lower() or 'date' in c.lower()), None)
     ticket_col = next((c for c in df.columns if c.lower() in ['ticket', 'order', 'position', 'deal']), None)
     entry_col = next((c for c in df.columns if c.lower() in ['entry', 'direction', 'in/out']), None)
 
-    # กรองเฉพาะประเภท Buy และ Sell (ตัด Deposit, Balance, Credit, Withdrawal ออก)
+    # 1. กรองเฉพาะประเภท Buy และ Sell เท่านั้น (ตัด Deposit, Balance, Credit, Withdrawal ออก)
     if type_col:
         df = df[df[type_col].astype(str).str.lower().str.strip().isin(['buy', 'sell'])].copy()
 
-    # กรองเอาเฉพาะขาออก out / in/out
+    # 2. กรองเฉพาะออเดอร์ขาปิด out / in/out
     if entry_col:
         valid_entries = ['out', 'in/out', 'in / out']
         if df[entry_col].astype(str).str.lower().str.strip().isin(valid_entries).any():
             df = df[df[entry_col].astype(str).str.lower().str.strip().isin(valid_entries)].copy()
 
-    # กรองแถวที่มีเลข Ticket สด
+    # 3. กรองแถวที่มีเลข Ticket / Position ID ชัดเจน
     if ticket_col:
         df = df[pd.to_numeric(df[ticket_col].astype(str).str.replace('#', ''), errors='coerce').notnull()].copy()
 
-    # ทำความสะอาดคอลัมน์ Profit
+    # 4. แปลงคอลัมน์ Profit
     if profit_col:
         df['Profit_Clean'] = df[profit_col].apply(clean_number)
     else:
         df['Profit_Clean'] = 0.0
 
-    # แปลงวันที่
+    # 5. แปลงวันที่
     if time_col:
         df['datetime_parsed'] = pd.to_datetime(df[time_col], errors='coerce')
         df = df[df['datetime_parsed'].notnull()].copy()
         df['Date'] = df['datetime_parsed'].dt.date
+        df['Year'] = df['datetime_parsed'].dt.year
+        df['Month'] = df['datetime_parsed'].dt.month
 
     return df
 
@@ -106,28 +104,45 @@ if uploaded_file is not None:
     try:
         df = process_trade_data(uploaded_file)
 
-        profit_col = 'Profit_Clean'
-        total_profit = df[profit_col].sum()
-        total_trades = len(df)
-        win_trades = len(df[df[profit_col] > 0])
-        loss_trades = len(df[df[profit_col] < 0])
-        win_rate = (win_trades / total_trades * 100) if total_trades > 0 else 0
+        if 'Date' in df.columns and not df.empty:
+            all_dates = list(df['Date'].dropna())
+            latest_date = max(all_dates) if all_dates else datetime.now().date()
+            available_years = sorted(list(set(d.year for d in all_dates)), reverse=True) if all_dates else [latest_date.year]
 
-        col1, col2, col3 = st.columns(3)
-        col1.metric("กำไรรวมทั้งหมด (Net Profit)", f"${total_profit:,.2f}")
-        col2.metric("จำนวนไม้ออเดอร์ทั้งหมด", f"{total_trades:,} ไม้")
-        col3.metric("Win Rate", f"{win_rate:.1f}%")
+            c_year, c_month = st.columns(2)
+            sel_year = c_year.selectbox("เลือกปีที่ต้องการดู:", available_years, index=0)
 
-        st.markdown("---")
+            thai_months = ["มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน",
+                           "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม"]
 
-        tab1, tab2, tab3 = st.tabs(["📅 ตารางปฏิทิน", "📈 กราฟสถิติ", "📜 ประวัติออเดอร์"])
+            default_month_idx = (latest_date.month - 1) if sel_year == latest_date.year else 0
+            sel_month_name = c_month.selectbox("เลือกเดือนที่ต้องการดู:", thai_months, index=default_month_idx)
+            sel_month = thai_months.index(sel_month_name) + 1
 
-        with tab1:
-            st.subheader("📅 ตารางปฏิทินกำไร/ขาดทุนรายวัน และสรุปรายสัปดาห์")
+            # กรองข้อมูลเฉพาะ "ปี" และ "เดือน" ที่เลือกเพื่อแสดงผลสรุป
+            month_df = df[(df['Year'] == sel_year) & (df['Month'] == sel_month)].copy()
 
-            if 'Date' in df.columns and not df.empty:
+            profit_col = 'Profit_Clean'
+            m_total_profit = month_df[profit_col].sum() if not month_df.empty else 0.0
+            m_total_trades = len(month_df)
+            m_win_trades = len(month_df[month_df[profit_col] > 0])
+            m_win_rate = (m_win_trades / m_total_trades * 100) if m_total_trades > 0 else 0
+
+            # แสดงการ์ดสรุปยอดประจำเดือนที่เลือก
+            col1, col2, col3 = st.columns(3)
+            col1.metric(f"กำไรสุทธิประจำเดือน ({sel_month_name} {sel_year})", f"${m_total_profit:,.2f}")
+            col2.metric("จำนวนไม้รวมทั้งเดือน", f"{m_total_trades:,} ไม้")
+            col3.metric("Win Rate ประจำเดือน", f"{m_win_rate:.1f}%")
+
+            st.markdown("---")
+
+            tab1, tab2, tab3 = st.tabs(["📅 ตารางปฏิทิน", "📈 กราฟสถิติ", "📜 ประวัติออเดอร์"])
+
+            with tab1:
+                st.subheader(f"📅 ตารางปฏิทินตัดรอบรายวัน และสรุปสัปดาห์ประจำเดือน {sel_month_name} {sel_year}")
+
                 daily_stats = {}
-                for date_val, group in df.groupby('Date'):
+                for date_val, group in month_df.groupby('Date'):
                     if pd.isnull(date_val):
                         continue
                     pnl = group[profit_col].sum()
@@ -137,21 +152,6 @@ if uploaded_file is not None:
                         'win': len(group[group[profit_col] > 0]),
                         'loss': len(group[group[profit_col] < 0])
                     }
-
-                all_dates = list(df['Date'].dropna())
-                latest_date = max(all_dates) if all_dates else datetime.now().date()
-                available_years = sorted(list(set(d.year for d in all_dates)), reverse=True) if all_dates else [latest_date.year]
-
-                c_year, c_month = st.columns(2)
-                sel_year = c_year.selectbox("ปี:", available_years, index=0)
-
-                thai_months = ["มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน",
-                               "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม"]
-
-                sel_month_name = c_month.selectbox("เดือน:", thai_months, index=latest_date.month - 1)
-                sel_month = thai_months.index(sel_month_name) + 1
-
-                st.markdown(f"### {sel_month_name} {sel_year}")
 
                 days_header = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
                 cols = st.columns(8)
@@ -209,7 +209,7 @@ if uploaded_file is not None:
 
                     sum_html = f"""
                     <div class='cal-day-box-sum'>
-                        <div class='cal-day-num' style='color:#3fb950;'>SUM</div>
+                        <div class='cal-day-num' style='color:#3fb950;'>WEEK SUM</div>
                         <div>
                             <div class='{w_pnl_class}'>{w_sign}${w_pnl:,.2f}</div>
                             <div class='sub-trades'>{w_trades} Trades</div>
@@ -219,22 +219,22 @@ if uploaded_file is not None:
                     """
                     cols[7].markdown(sum_html, unsafe_allow_html=True)
 
-        with tab2:
-            st.subheader("📈 กราฟการเติบโตของพอร์ต (Cumulative Profit)")
-            if 'datetime_parsed' in df.columns and not df.empty:
-                df_sorted = df.sort_values('datetime_parsed')
-                df_sorted['cum_profit'] = df_sorted[profit_col].cumsum()
-                fig = px.line(df_sorted, x='datetime_parsed', y='cum_profit',
-                              labels={'datetime_parsed': 'เวลา', 'cum_profit': 'กำไรสะสม ($)'},
-                              template="plotly_dark")
-                st.plotly_chart(fig, use_container_width=True)
+            with tab2:
+                st.subheader("📈 กราฟการเติบโตของพอร์ตประจำเดือน (Cumulative Profit)")
+                if 'datetime_parsed' in month_df.columns and not month_df.empty:
+                    df_sorted = month_df.sort_values('datetime_parsed')
+                    df_sorted['cum_profit'] = df_sorted[profit_col].cumsum()
+                    fig = px.line(df_sorted, x='datetime_parsed', y='cum_profit',
+                                  labels={'datetime_parsed': 'เวลา', 'cum_profit': 'กำไรสะสม ($)'},
+                                  template="plotly_dark")
+                    st.plotly_chart(fig, use_container_width=True)
 
-        with tab3:
-            st.subheader("📋 ประวัติการเทรดทั้งหมด (Trade Logs)")
-            display_df = df.copy()
-            cols_to_drop = ['datetime_parsed', 'Date', 'Profit_Clean', 'cum_profit']
-            display_df = display_df.drop(columns=[c for c in cols_to_drop if c in display_df.columns])
-            st.dataframe(display_df, use_container_width=True)
+            with tab3:
+                st.subheader("📋 ประวัติการเทรดเฉพาะเดือนนี้ (Trade Logs)")
+                display_df = month_df.copy()
+                cols_to_drop = ['datetime_parsed', 'Date', 'Year', 'Month', 'Profit_Clean', 'cum_profit']
+                display_df = display_df.drop(columns=[c for c in cols_to_drop if c in display_df.columns])
+                st.dataframe(display_df, use_container_width=True)
 
     except Exception as e:
         st.error(f"เกิดข้อผิดพลาดในการประมวลผลไฟล์: {e}")
